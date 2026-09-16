@@ -2,7 +2,3 @@
 venv1/
 __pycache__/
 *.py[cod]
-
-# Runtime output
-image_receiver.log
-received_images/

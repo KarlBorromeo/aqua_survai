@@ -45,7 +45,6 @@ python laptop_detection_server.py --port 5000 --device cpu --imgsz 320 --show
 Run these commands in the project directory:
 
 ```bash
-cd /home/couliglig1/aqua_survai
 python3 -m venv venv1
 source venv1/bin/activate
 pip install --upgrade pip
