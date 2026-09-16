@@ -24,6 +24,36 @@ Find the laptop IP address with:
 hostname -I
 ```
 
+## Execution examples
+
+Start this first on the laptop:
+
+```bash
+cd /home/couliglig1/aqua_survai
+source venv1/bin/activate
+python laptop_detection_server.py --port 5000 --device cpu --imgsz 416 --show
+```
+
+Then start this on the Raspberry Pi:
+
+```bash
+cd ~/Downloads/FOREGDE
+source venv1/bin/activate
+python3 rpi_camera_client.py --laptop-ip 192.168.20.133 --port 5000 --display-window true
+```
+
+For a Raspberry Pi without a monitor:
+
+```bash
+python3 rpi_camera_client.py --laptop-ip 192.168.20.133 --port 5000 --display-window false
+```
+
+For faster laptop inference with lower image detail:
+
+```bash
+python laptop_detection_server.py --port 5000 --device cpu --imgsz 320 --show
+```
+
 ## Laptop setup
 
 Run these commands in the project directory:
