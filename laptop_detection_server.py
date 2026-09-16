@@ -133,6 +133,86 @@ class CustomProjectModel:
         return detections
 
 
+def detection_color(label: str) -> tuple[int, int, int]:
+    """Return an OpenCV BGR color for the model's class name."""
+    normalized = label.lower()
+    if "drown" in normalized:
+        return (0, 0, 255)  # red
+    if "swim" in normalized:
+        return (0, 200, 0)  # green
+    return (0, 180, 255)  # orange
+
+
+def draw_preview(
+    frame: np.ndarray, response: dict[str, Any], fps: float
+) -> np.ndarray:
+    """Draw local preview overlays without changing the network response."""
+    view = frame.copy()
+    height, width = view.shape[:2]
+    visible_detections = 0
+
+    for detection in response.get("detections", []):
+        if not isinstance(detection, dict):
+            continue
+        label = str(detection.get("class", detection.get("label", "unknown")))
+        try:
+            confidence = float(detection.get("confidence", 0.0))
+            bbox = detection["bbox"]
+            x1 = max(0, min(width - 1, round(float(bbox["x1"]))))
+            y1 = max(0, min(height - 1, round(float(bbox["y1"]))))
+            x2 = max(0, min(width - 1, round(float(bbox["x2"]))))
+            y2 = max(0, min(height - 1, round(float(bbox["y2"]))))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        color = detection_color(label)
+        cv2.rectangle(view, (x1, y1), (x2, y2), color, 2)
+        text = f"{label} {confidence:.0%}"
+        (text_width, text_height), baseline = cv2.getTextSize(
+            text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2
+        )
+        text_y = max(text_height + 6, y1)
+        cv2.rectangle(
+            view,
+            (x1, text_y - text_height - 6),
+            (x1 + text_width + 6, text_y + baseline),
+            color,
+            -1,
+        )
+        cv2.putText(
+            view,
+            text,
+            (x1 + 3, text_y - 3),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        visible_detections += 1
+
+    status = (
+        f"Model: {'OK' if response.get('ok') else 'ERROR'} | "
+        f"Detections: {visible_detections} | "
+        f"FPS: {fps:.1f} | "
+        f"Processing: {response.get('processing_ms', 0):.0f} ms"
+    )
+    cv2.rectangle(view, (0, 0), (width, 30), (25, 25, 25), -1)
+    cv2.putText(
+        view,
+        status,
+        (8, 21),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return view
+
+
 def serve_client(
     client: socket.socket,
     detector: CustomProjectModel,
@@ -154,13 +234,6 @@ def serve_client(
         #     frame.shape[0],
         #     receive_ms,
         # )
-
-        if show:
-            cv2.imshow("Raspberry Pi Camera", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                LOGGER.info("Preview closed by user")
-                raise KeyboardInterrupt
 
         started = time.perf_counter()
 
@@ -199,6 +272,12 @@ def serve_client(
             cycle_ms,
             fps,
         )
+        if show:
+            cv2.imshow("Raspberry Pi Camera", draw_preview(frame, response, fps))
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                LOGGER.info("Preview closed by user")
+                raise KeyboardInterrupt
 
 
 def run_server(
