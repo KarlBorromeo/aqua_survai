@@ -1,21 +1,21 @@
 # Aqua Survai
 
-Raspberry Pi camera monitoring with model inference on a laptop.
+Laptop-side model inference server for Raspberry Pi camera monitoring.
 
-The Raspberry Pi captures a frame, JPEG-encodes it, and sends it to the laptop over TCP. The laptop runs the project's fixed `model1.pt`, then returns JSON detections over the same socket. The Pi shows the returned bounding boxes, labels, confidence values, and alert state in an OpenCV window.
+Run only `laptop_detection_server.py` from this repository. It receives Raspberry Pi camera frames, runs the project's fixed `model1.pt`, and returns detections over the same TCP socket.
 
 ## Files
 
 | File | Run on | Purpose |
 | --- | --- | --- |
-| `laptop_detection_server.py` | Laptop | Receives frames, runs `model1.pt`, and returns JSON detections. |
-| `rpi_camera_client.py` | Raspberry Pi | Captures/sends frames, receives JSON detections, and displays annotated video. |
+| `laptop_detection_server.py` | Laptop | The main file to run. Receives frames, runs `model1.pt`, and returns JSON detections. |
+| `rpi_camera_client.py` | Backup/reference | Copy this file to a Raspberry Pi only if a Pi sender/client is needed. Do not run it as part of the laptop setup. |
 | `model1.pt` | Laptop | The project's trained model. Keep it beside `laptop_detection_server.py`. |
 
 ## Network requirements
 
 - Connect the laptop and Raspberry Pi to the same network.
-- Set `LAPTOP_IP` in `rpi_camera_client.py`, or pass it through `--laptop-ip`.
+- The deployed Raspberry Pi sender must connect to the laptop IP address and port below.
 - The laptop listens on TCP port `5000` by default. Ensure the firewall permits it.
 
 Find the laptop IP address with:
@@ -26,26 +26,12 @@ hostname -I
 
 ## Execution examples
 
-Start this first on the laptop:
+Run the laptop server:
 
 ```bash
 cd /home/couliglig1/aqua_survai
 source venv1/bin/activate
 python laptop_detection_server.py --port 5000 --device cpu --imgsz 416 --show
-```
-
-Then start this on the Raspberry Pi:
-
-```bash
-cd ~/Downloads/FOREGDE
-source venv1/bin/activate
-python3 rpi_camera_client.py --laptop-ip 192.168.20.133 --port 5000 --display-window true
-```
-
-For a Raspberry Pi without a monitor:
-
-```bash
-python3 rpi_camera_client.py --laptop-ip 192.168.20.133 --port 5000 --display-window false
 ```
 
 For faster laptop inference with lower image detail:
@@ -77,9 +63,11 @@ python laptop_detection_server.py --port 5000 --device cpu --imgsz 416 --show
 
 The model path is fixed to `model1.pt`; there is no model-selection argument.
 
-## Raspberry Pi setup
+## Raspberry Pi backup client
 
-Copy `rpi_camera_client.py` to the Raspberry Pi. Then create a Pi virtual environment and install OpenCV:
+`rpi_camera_client.py` is retained as a backup/reference sender file. If you need to deploy or restore the Pi client, copy it to the Raspberry Pi. It is not required to run the laptop server in this repository.
+
+The backup client requires OpenCV on the Pi:
 
 ```bash
 python3 -m venv venv1
@@ -90,7 +78,7 @@ pip install opencv-python
 
 If your Pi system Python already supplies a working `cv2`, you can use that instead of installing OpenCV in the virtual environment.
 
-Run the client, replacing the IP address with the laptop's address:
+Example backup-client command, replacing the IP address with the laptop's address:
 
 ```bash
 python3 rpi_camera_client.py \
@@ -99,16 +87,7 @@ python3 rpi_camera_client.py \
   --display-window true
 ```
 
-For a Pi without a monitor or desktop session:
-
-```bash
-python3 rpi_camera_client.py \
-  --laptop-ip 192.168.20.133 \
-  --port 5000 \
-  --display-window false
-```
-
-## Configuration
+## Backup client configuration
 
 The default Pi settings are at the top of `rpi_camera_client.py`:
 
@@ -121,7 +100,7 @@ JPEG_QUALITY = 50
 CONF_THRESHOLD = 0.85
 ```
 
-The OpenCV preview uses the same camera frame dimensions. Press `q` or `Esc` in the Pi preview window to stop it.
+The backup client draws the laptop's returned boxes and labels in its OpenCV preview. Press `q` or `Esc` in its preview window to stop it.
 
 ## Returned detection format
 
