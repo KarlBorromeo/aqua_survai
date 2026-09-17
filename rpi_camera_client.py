@@ -10,6 +10,7 @@ import traceback
 from collections import deque
 
 import cv2
+import serial
 
 
 # Laptop network configuration
@@ -26,7 +27,7 @@ CAMERA_HEIGHT = 600
 JPEG_QUALITY = 50
 
 # Detection configuration
-CONF_THRESHOLD = 0.85
+CONF_THRESHOLD = 0.0
 FRAME_SKIP = 1
 PRINT_EVERY_SEC = 1.0
 SMOOTH_WINDOW = 10
@@ -34,6 +35,11 @@ SMOOTH_WINDOW = 10
 # Alert configuration
 ALERT_HOLD_SECONDS = 6.0
 COOLDOWN_SECONDS = 60.0
+
+# ESP serial configuration
+ESP_SERIAL_PORT = "/dev/ttyACM0"
+ESP_BAUD_RATE = 115200
+SERIAL_RECONNECT_DELAY = 2.0
 
 DEBUG = True
 DEBUG_DETECTIONS = True
@@ -72,6 +78,86 @@ def close_socket(sock):
             sock.close()
         except OSError:
             pass
+
+
+class ESPSerialSender:
+    """Keep the ESP serial connection alive without stopping model processing."""
+
+    def __init__(self, device, baud_rate):
+        self.device = device
+        self.baud_rate = baud_rate
+        self.connection = None
+        self.next_connect_attempt = 0.0
+
+    def close(self):
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except serial.SerialException:
+                pass
+            self.connection = None
+
+    def send_drowning_count(self, count):
+        if self.connection is None:
+            now = time.monotonic()
+            if now < self.next_connect_attempt:
+                return
+            try:
+                self.connection = serial.Serial(
+                    self.device,
+                    self.baud_rate,
+                    timeout=1,
+                    write_timeout=1,
+                )
+                log(f"Connected to ESP on {self.device} at {self.baud_rate} baud")
+            except (OSError, serial.SerialException) as exc:
+                log(f"Could not connect to ESP serial port: {exc}")
+                self.next_connect_attempt = now + SERIAL_RECONNECT_DELAY
+                return
+
+        command = f"drowning_{count}\n"
+        try:
+            self.connection.write(command.encode("ascii"))
+            self.connection.flush()
+            debug(f"Sent ESP command: {command}")
+        except (OSError, serial.SerialException) as exc:
+            log(f"ESP serial write failed: {exc}")
+            self.close()
+            self.next_connect_attempt = time.monotonic() + SERIAL_RECONNECT_DELAY
+
+
+def model_result_callback(result, esp_sender):
+    """Process one model result and notify the ESP of its drowning count."""
+    detections = result.get("detections", [])
+    if not isinstance(detections, list):
+        debug("Invalid detections value received; treating it as empty")
+        detections = []
+
+    drowning_count = 0
+    swimming_count = 0
+    detected_labels = []
+
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        label = str(
+            detection.get("class", detection.get("label", "unknown"))
+        ).lower()
+        try:
+            confidence = float(detection.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if confidence < CONF_THRESHOLD:
+            continue
+
+        detected_labels.append(f"{label}:{confidence:.2f}")
+        if is_drowning_label(label):
+            drowning_count += 1
+        elif is_swimming_label(label):
+            swimming_count += 1
+
+    esp_sender.send_drowning_count(drowning_count)
+    return detections, drowning_count, swimming_count, detected_labels
 
 
 def connect_to_laptop():
@@ -123,10 +209,10 @@ def send_frame_and_get_result(sock, frame):
     round_trip_ms = (time.perf_counter() - encode_started) * 1000
     # This field is local to the Pi. It is not sent back to the laptop.
     result["_round_trip_ms"] = round_trip_ms
-    debug(
-        f"Laptop reply frame_id={result.get('frame_id', '?')} "
-        f"bytes_sent={len(frame_bytes)} round_trip_ms={round_trip_ms:.1f}"
-    )
+    # debug(
+    #     f"Laptop reply frame_id={result.get('frame_id', '?')} "
+    #     f"bytes_sent={len(frame_bytes)} round_trip_ms={round_trip_ms:.1f}"
+    # )
 
     if result.get("ok") is False:
         log(f"Laptop detection error: {result.get('error', 'unknown error')}")
@@ -176,6 +262,17 @@ def parse_args():
             "show the annotated OpenCV camera window "
             f"(default: {str(DISPLAY_WINDOW).lower()})"
         ),
+    )
+    parser.add_argument(
+        "--serial-port",
+        default=ESP_SERIAL_PORT,
+        help=f"ESP serial device (default: {ESP_SERIAL_PORT})",
+    )
+    parser.add_argument(
+        "--baud-rate",
+        type=int,
+        default=ESP_BAUD_RATE,
+        help=f"ESP serial baud rate (default: {ESP_BAUD_RATE})",
     )
     return parser.parse_args()
 
@@ -296,6 +393,7 @@ def main():
     drowning_since = None
     last_alert_time = 0.0
     alert_armed = True
+    esp_sender = ESPSerialSender(args.serial_port, args.baud_rate)
 
     total_buf = deque(maxlen=SMOOTH_WINDOW)
     drown_buf = deque(maxlen=SMOOTH_WINDOW)
@@ -330,35 +428,12 @@ def main():
                 time.sleep(RECONNECT_DELAY)
                 continue
 
-            detections = result.get("detections", [])
-            if not isinstance(detections, list):
-                debug("Invalid detections value received; treating it as empty")
-                detections = []
-
-            drowning_count = 0
-            swimming_count = 0
-            detected_labels = []
-
-            for detection in detections:
-                if not isinstance(detection, dict):
-                    continue
-                # Current laptop receiver sends both keys. Supporting both
-                # keeps this client compatible with older/newer receivers.
-                label = str(
-                    detection.get("class", detection.get("label", "unknown"))
-                ).lower()
-                try:
-                    confidence = float(detection.get("confidence", 0.0))
-                except (TypeError, ValueError):
-                    continue
-                if confidence < CONF_THRESHOLD:
-                    continue
-
-                detected_labels.append(f"{label}:{confidence:.2f}")
-                if is_drowning_label(label):
-                    drowning_count += 1
-                elif is_swimming_label(label):
-                    swimming_count += 1
+            (
+                detections,
+                drowning_count,
+                swimming_count,
+                detected_labels,
+            ) = model_result_callback(result, esp_sender)
 
             if DEBUG_DETECTIONS and detected_labels:
                 debug(f"Frame {frame_idx}: detections={detected_labels}")
@@ -436,6 +511,7 @@ def main():
         log("Closing camera and socket")
         camera.release()
         close_socket(sock)
+        esp_sender.close()
         if DISPLAY_WINDOW:
             cv2.destroyAllWindows()
         log("Raspberry Pi camera client stopped")
